@@ -1,3 +1,18 @@
+Update:
+#Setup
+```cmd
+wget http://images.cocodataset.org/zips/test2014.zip
+unzip test2014.zip
+rm test2014.zip
+```
+Download checkpoint model
+```cmd
+wget https://huggingface.co/stabilityai/stable-diffusion-2-1-base/resolve/main/v2-1_512-ema-pruned.ckpt -P stable-diffusion-2-1-base/
+```
+
+
+
+
 # ✍️ The Stable Signature: Rooting Watermarks in Latent Diffusion Models
 
 Implementation and pretrained models.
