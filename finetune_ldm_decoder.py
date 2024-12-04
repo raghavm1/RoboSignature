@@ -73,6 +73,7 @@ def get_parser():
     aa("--output_dir", type=str, default="output/", help="Output directory for logs and images (Default: /output)")
     aa("--seed", type=int, default=0)
     aa("--debug", type=utils.bool_inst, default=False, help="Debug mode")
+    aa("--strategy", type=int, default=0, help="Watermarking strategy (0: original, 1: randomfrompaper, 2: gradual randomness)")
 
     return parser
 
@@ -205,8 +206,11 @@ def main(params):
 
         # Creating key
         print(f'\n>>> Creating key with {nbit} bits...')
-        key = torch.randint(0, 2, (1, nbit), dtype=torch.float32, device=device)
-        key_str = "".join([ str(int(ii)) for ii in key.tolist()[0]])
+        if(params.strategy==0):
+            key = torch.randint(0, 2, (1, nbit), dtype=torch.float32, device=device)
+            key_str = "".join([ str(int(ii)) for ii in key.tolist()[0]])
+        else:
+            key_str="111010110101000001010111010011010100010000100111"
         print(f'Key: {key_str}')
 
         # Copy the LDM decoder and finetune the copy
@@ -247,8 +251,16 @@ def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Calla
     metric_logger = utils.MetricLogger(delimiter="  ")
     ldm_decoder.decoder.train()
     base_lr = optimizer.param_groups[0]["lr"]
+    current_key = key.clone()
     for ii, imgs in enumerate(metric_logger.log_every(data_loader, params.log_freq, header)):
         imgs = imgs.to(device)
+        if(params.strategy==1):
+            key = torch.randint(0, 2, (1,params.num_bits), dtype=torch.float32, device=device)
+        if(params.strategy==2):
+            num_bits_to_flip = min(ii + 1, params.num_bits)
+            indices_to_flip = torch.randperm(params.num_bits)[:num_bits_to_flip]
+            current_key[indices_to_flip] = 1 - current_key[indices_to_flip]
+            key = current_key
         keys = key.repeat(imgs.shape[0], 1)
         
         utils.adjust_learning_rate(optimizer, ii, params.steps, params.warmup_steps, base_lr)
