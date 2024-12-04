@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=program
-#SBATCH --output=/home/rm6418/ss1.out
+#SBATCH --output=/home/gb2762/ss1.out
 #SBATCH --error=/home/rm6418/ss1.err
 #SBATCH --time=01:00:00
 #SBATCH --account=csci_ga_2271_001-2024fa
@@ -17,4 +17,4 @@ python Tamper_Resistant_Stable_Signature/finetune_ldm_decoder.py --num_keys 1 \
     --ldm_ckpt Tamper_Resistant_Stable_Signature/stable-diffusion-2-1-base/v2-1_512-ema-pruned.ckpt \
     --msg_decoder_path Tamper_Resistant_Stable_Signature/models/dec_48b_whit.torchscript.pt \
     --train_dir Tamper_Resistant_Stable_Signature/train2014500/ \
-    --val_dir Tamper_Resistant_Stable_Signature/test2014/ 2> /home/rm6418/log.err > /home/rm6418/log.out"
+    --val_dir Tamper_Resistant_Stable_Signature/test2014/"
