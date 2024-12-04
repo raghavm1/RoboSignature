@@ -1,20 +1,21 @@
 #!/bin/bash
-
+  
 #SBATCH --job-name=program
 #SBATCH --output=/home/gb2762/ss1.out
-#SBATCH --error=/home/rm6418/ss1.err
+#SBATCH --error=/home/gb2762/ss1.err
 #SBATCH --time=01:00:00
 #SBATCH --account=csci_ga_2271_001-2024fa
 #SBATCH --partition=n1s8-v100-1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:v100:1
 #SBATCH --mem=0
-singularity exec --nv --bind /scratch/rm6418 --overlay /scratch/rm6418/overlay-25GB-500K.ext3:rw /scratch/rm6418/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif /bin/bash -c "cd /scratch/rm6418/ && \
-export PYTHONPATH="/scratch/rm6418/Tamper_Resistant_Stable_Signature/src/:$PYTHONPATH" && \
+singularity exec --nv --bind /scratch/gb2762/ --overlay /scratch/gb2762/overlay-25GB-500K.ext3:rw /scratch/gb2762/cuda12.2.2-cudnn8.9.4-devel-ubuntu22.04.3.sif /bin/
+bash -c "cd /scratch/gb2762/ && \
+export PYTHONPATH="/scratch/gb2762/Tamper_Resistant_Stable_Signature/src/:$PYTHONPATH" && \
 source /ext3/env.sh && \
 python Tamper_Resistant_Stable_Signature/finetune_ldm_decoder.py --num_keys 1 \
     --ldm_config Tamper_Resistant_Stable_Signature/stable-diffusion-2-1/v2-inference.yaml \
     --ldm_ckpt Tamper_Resistant_Stable_Signature/stable-diffusion-2-1-base/v2-1_512-ema-pruned.ckpt \
     --msg_decoder_path Tamper_Resistant_Stable_Signature/models/dec_48b_whit.torchscript.pt \
     --train_dir Tamper_Resistant_Stable_Signature/train2014500/ \
-    --val_dir Tamper_Resistant_Stable_Signature/test2014/"
+    --val_dir Tamper_Resistant_Stable_Signature/test2014/
