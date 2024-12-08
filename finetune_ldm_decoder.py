@@ -102,6 +102,11 @@ def main(params):
     config = OmegaConf.load(f"{params.ldm_config}")
     ldm_ae: LatentDiffusion = utils_model.load_model_from_config(config, params.ldm_ckpt)
     ldm_ae: AutoencoderKL = ldm_ae.first_stage_model
+    if(params.strategy!=0):
+        state_dict = torch.load("output/checkpoint_000.pth")['ldm_decoder']
+        msg = ldm_ae.first_stage_model.load_state_dict(state_dict, strict=False)
+        print(f"loaded LDM decoder state_dict with message\n{msg}")
+        print("you should check that the decoder keys are correctly matched")
     ldm_ae.eval()
     ldm_ae.to(device)
     
@@ -210,6 +215,7 @@ def main(params):
             key = torch.randint(0, 2, (1, nbit), dtype=torch.float32, device=device)
             key_str = "".join([ str(int(ii)) for ii in key.tolist()[0]])
         else:
+            key=torch.tensor([[1,1,1,0,1,0,1,1,0,1,0,1,0,0,0,0,0,1,0,1,0,1,1,1,0,1,0,0,1,1,0,1,0,1,0,0,0,1,0,0,0,0,1,0,0,1,1,1]], dtype=torch.float32, device=device)
             key_str="111010110101000001010111010011010100010000100111"
         print(f'Key: {key_str}')
 
@@ -239,12 +245,20 @@ def main(params):
         }
 
         # Save checkpoint
-        torch.save(save_dict, os.path.join(params.output_dir, f"checkpoint_{ii_key:03d}.pth"))
-        with (Path(params.output_dir) / "log.txt").open("a") as f:
-            f.write(json.dumps(log_stats) + "\n")
-        with (Path(params.output_dir) / "keys.txt").open("a") as f:
-            f.write(os.path.join(params.output_dir, f"checkpoint_{ii_key:03d}.pth") + "\t" + key_str + "\n")
-        print('\n')
+        if(params.strategy==0):
+            torch.save(save_dict, os.path.join(params.output_dir, f"checkpoint_{ii_key:03d}.pth"))
+            with (Path(params.output_dir) / "log.txt").open("a") as f:
+                f.write(json.dumps(log_stats) + "\n")
+            with (Path(params.output_dir) / "keys.txt").open("a") as f:
+                f.write(os.path.join(params.output_dir, f"checkpoint_{ii_key:03d}.pth") + "\t" + key_str + "\n")
+            print('\n')
+        else:
+            torch.save(save_dict, os.path.join(params.output_dir, f"checkpointtar_{ii_key:03d}_{params.strategy}.pth"))
+            with (Path(params.output_dir) / "log.txt").open("a") as f:
+                f.write(json.dumps(log_stats) + "\n")
+            with (Path(params.output_dir) / "keys.txt").open("a") as f:
+                f.write(os.path.join(params.output_dir, f"checkpointtar_{ii_key:03d}_{params.strategy}.pth") + "\t" + key_str + "\n")
+            print('\n')
 
 def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
     header = 'Train'
