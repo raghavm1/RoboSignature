@@ -103,7 +103,7 @@ def main(params):
     ldm_ae: LatentDiffusion = utils_model.load_model_from_config(config, params.ldm_ckpt)
     ldm_ae: AutoencoderKL = ldm_ae.first_stage_model
     if(params.strategy!=0):
-        state_dict = torch.load("output/checkpoint_000.pth")['ldm_decoder']
+        state_dict = torch.load("/scratch/gb2762/output/checkpoint_000.pth")['ldm_decoder']
         msg = ldm_ae.first_stage_model.load_state_dict(state_dict, strict=False)
         print(f"loaded LDM decoder state_dict with message\n{msg}")
         print("you should check that the decoder keys are correctly matched")
