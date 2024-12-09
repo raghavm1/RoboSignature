@@ -290,7 +290,7 @@ def main(params):
         # get 80% split
         atrain_size = int(0.8 * len(atrain_dataset))
         dtr_size = len(atrain_dataset) - atrain_size
-        train_dataset, val_dataset = random_split(atrain_dataset, [atrain_size, atrain_size])
+        train_dataset, val_dataset = random_split(atrain_dataset, [atrain_size, dtr_size])
         atrain_loader = DataLoader(
             train_dataset,
             batch_size=params.batch_size,
@@ -411,16 +411,27 @@ def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Calla
     return ldm_decoder, {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 def get_weights_mean(base_model_outputs, model_outputs):
+    """
+        modified from the original paper to support dicts
+    """
     return torch.mean(
         torch.stack(
             [
-                (torch.norm(base_hidden - model_hidden, dim=-1)).mean()
-                for base_hidden, model_hidden in zip(
-                    base_model_outputs.hidden_states, model_outputs.hidden_states
-                )
+                (torch.norm(base_model_outputs[key] - model_outputs[key], dim=-1)).mean()
+                for key in base_model_outputs.keys() & model_outputs.keys()
             ]
         )
     )
+
+# these two functions to register and save hidden states in the LDMs
+def save_hidden_states(target_dict, name):
+    def hook(module, input, output):
+        target_dict[name] = output.detach()
+    return hook
+
+def register_hooks(model, model_name, target_dict):
+    for name, layer in model.named_modules():
+        layer.register_forward_hook(save_hidden_states(target_dict, f"{name}"))
 
 def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
     vqgan_transform = transforms.Compose([
@@ -429,59 +440,61 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         transforms.ToTensor(),
         utils_img.normalize_vqgan,
     ])
-
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # load all datasets needed
     Retain_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)    
     
-    attacked_decoder = ldm_decoder # original decoder, to be used for adversarial fine-tuning
+    attacked_decoder = deepcopy(ldm_decoder) # original decoder, to be used for adversarial fine-tuning
     og_decoder = deepcopy(ldm_decoder) # create copy for comparison
-    og_key = key
+    hidden_states_ldm = {}
+    hidden_states_og = {}
+    register_hooks(ldm_decoder, "ldm_decoder", hidden_states_ldm)
+    register_hooks(og_decoder, "og_decoder", hidden_states_og)
+    og_key = key.clone()
     l_tr_grad_scale=4.0 # lambda_tr
     l_retain_grad_scale=1.0 # lambda term for retaining
     train_stats_arr = []
     for i in range(params.outer_steps):
         g_tr=0 # for accumulating gradients
         
-        x_tr = iter(dtr_loader) # sample x_tr from d_tr
+        x_tr = next(iter(dtr_loader))[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
         
         attacked_decoder = deepcopy(ldm_decoder)
         for k in range(params.inner_steps):
 
             # entire adversarial fine-tuning step
-            attacked_decoder, train_stats = train(data_loader=atrain_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key)
+            attacked_decoder, train_stats = train(data_loader=atrain_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key, params=params)
             train_stats_arr.append(train_stats)
             # x_tr step | single backprop to obtain gradients
             imgs_z = ldm_ae.encode(x_tr) # encode image first, b c h w -> b z h/f w/f
             imgs_z = imgs_z.mode()
-            imgs_z.requires_grad_(True) # to get gradients
             decoded = attacked_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
 
             # extract watermark to compute loss with
-            attacked_msg = msg_decoder(decoded) # original, b c h w -> b k
-            l_tr = loss_w(attacked_msg, og_key)
-            l_tr*=l_tr_grad_scale/params.inner_steps
+            attacked_msg = msg_decoder(decoded) # b c h w -> b k
+            l_tr = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
+            l_tr*=l_tr_grad_scale/(params.inner_steps)
             l_tr.backward() # backward pass to compute gradients
             #g_tr += attacked_msg.grad + ((l_tr)/params.inner_steps)# gradient accumulation
         
 
-        x_retain = iter(Retain_loader)
+        x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
         
         imgs_z = ldm_ae.encode(x_retain) # encode image first, b c h w -> b z h/f w/f
         imgs_z = imgs_z.mode()
         attacked_img = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
         og_img = og_decoder.decode(imgs_z)
         attacked_msg = msg_decoder(attacked_img) # original, b c h w -> b k
-        loss_watermark = loss_w(attacked_msg, key)
+        loss_watermark = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
         loss_watermark.backward()
         loss_image = loss_i(attacked_img, og_img)
-        loss_image.backward()
-        g_w = loss_watermark
-        g_i = loss_image
+        loss_combined = loss_watermark + loss_image
+        #loss_combined.backward()
         
         # image loss
-        lretain = (loss_watermark + loss_image) + get_weights_mean(ldm_decoder, og_decoder)
-        lretain*=l_retain_grad_scale
-        lretain.backward()
+        l_retain = loss_combined + get_weights_mean(hidden_states_ldm, hidden_states_og)
+        l_retain*=l_retain_grad_scale
+        l_retain.backward()
         optimizer.step()
         
     return ldm_decoder, train_stats_arr
