@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from torchvision.utils import save_image
 
@@ -43,7 +43,7 @@ def get_parser():
     group = parser.add_argument_group('Data parameters')
     aa("--train_dir", type=str, help="Path to the training data directory", required=True)
     aa("--val_dir", type=str, help="Path to the validation data directory", required=True)
-
+    aa("--atrain_dir", type=str, help="Path to the atrain set", required=False, default="train2014_10000")
     group = parser.add_argument_group('Model parameters')
     aa("--ldm_config", type=str, default="sd/stable-diffusion-v-1-4-original/v1-inference.yaml", help="Path to the configuration file for the LDM model") 
     aa("--ldm_ckpt", type=str, default="sd/stable-diffusion-v-1-4-original/sd-v1-4-full-ema.ckpt", help="Path to the checkpoint file for the LDM model") 
@@ -228,6 +228,7 @@ def main(params):
         transforms.ToTensor(),
         utils_img.normalize_vqgan,
     ])
+    atrain_loader = utils.get_dataloader(params.atrain_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     train_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     val_loader = utils.get_dataloader(params.val_dir, vqgan_transform, params.batch_size*4, num_imgs=1000, shuffle=False, num_workers=4, collate_fn=None)
     vqgan_to_imnet = transforms.Compose([utils_img.unnormalize_vqgan, utils_img.normalize_img])
@@ -284,9 +285,33 @@ def main(params):
         optim_params = utils.parse_params(params.optimizer)
         optimizer = utils.build_optimizer(model_params=ldm_decoder.parameters(), **optim_params)
 
+        atrain_dataset = atrain_loader.dataset
+
+        # get 80% split
+        atrain_size = int(0.8 * len(atrain_dataset))
+        dtr_size = len(atrain_dataset) - atrain_size
+        train_dataset, val_dataset = random_split(atrain_dataset, [atrain_size, atrain_size])
+        atrain_loader = DataLoader(
+            train_dataset,
+            batch_size=params.batch_size,
+            shuffle=True,  # Shuffle for training
+            num_workers=4,
+            collate_fn=None,
+        )
+
+        dtr_loader = DataLoader(
+            val_dataset,
+            batch_size=params.batch_size,
+            shuffle=False,  # No shuffle for validation
+            num_workers=4,
+            collate_fn=None,
+        )
+
+
         # Training loop
         print(f'>>> Training...')
-        tr_decoder, train_stats = tamper_train(dataset, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
+        
+        tr_decoder, train_stats = tamper_train(atrain_loader, dtr_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
         #train_stats = train(train_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
         val_stats = val(val_loader, ldm_ae, tr_decoder, msg_decoder, vqgan_to_imnet, key, params)
         log_stats = {'key': key_str,
@@ -395,7 +420,7 @@ def get_weights_mean(base_model_outputs, model_outputs):
         )
     )
 
-def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
+def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
     vqgan_transform = transforms.Compose([
         transforms.Resize(params.img_size),
         transforms.CenterCrop(params.img_size),
@@ -404,8 +429,6 @@ def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w
     ])
 
     # load all datasets needed
-    A_train_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
-    Dtr_loader = utils.get_dataloader(params.dtr_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     Retain_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)    
     
     attacked_decoder = ldm_decoder # original decoder, to be used for adversarial fine-tuning
@@ -416,13 +439,13 @@ def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w
     for i in range(params.outer_steps):
         g_tr=0 # for accumulating gradients
         
-        x_tr = iter(Dtr_loader) # sample x_tr from d_tr
+        x_tr = iter(dtr_loader) # sample x_tr from d_tr
         
 
         for k in range(params.inner_steps):
 
             # entire adversarial fine-tuning step
-            attacked_decoder, train_stats = train(data_loader=A_train_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key)
+            attacked_decoder, train_stats = train(data_loader=atrain_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key)
             
             # x_tr step | single backprop to obtain gradients
             imgs_z = ldm_ae.encode(x_tr) # encode image first, b c h w -> b z h/f w/f
