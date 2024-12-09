@@ -273,7 +273,7 @@ def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Calla
         if(params.strategy==2):
             num_bits_to_flip = min(ii + 1, params.num_bits)
             indices_to_flip = torch.randperm(params.num_bits)[:num_bits_to_flip]
-            current_key[indices_to_flip] = 1 - current_key[indices_to_flip]
+            current_key[:,indices_to_flip] = 1 - current_key[:,indices_to_flip]
             key = current_key
         keys = key.repeat(imgs.shape[0], 1)
         
