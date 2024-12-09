@@ -441,7 +441,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         
         x_tr = iter(dtr_loader) # sample x_tr from d_tr
         
-
+        attacked_decoder = deepcopy(ldm_decoder)
         for k in range(params.inner_steps):
 
             # entire adversarial fine-tuning step
@@ -465,7 +465,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         
         imgs_z = ldm_ae.encode(x_retain) # encode image first, b c h w -> b z h/f w/f
         imgs_z = imgs_z.mode()
-        attacked_img = attacked_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
+        attacked_img = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
         og_img = og_decoder.decode(imgs_z)
         attacked_msg = msg_decoder(attacked_img) # original, b c h w -> b k
         loss_watermark = loss_w(attacked_msg, key)
@@ -481,7 +481,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         lretain.backward()
         optimizer.step()
         
-    return attacked_decoder
+    return ldm_decoder
 
 
 if __name__ == '__main__':
