@@ -79,6 +79,59 @@ def get_parser():
 
     return parser
 
+@torch.no_grad()
+def val(data_loader: Iterable, ldm_ae: AutoencoderKL, ldm_decoder: AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
+    header = 'Eval'
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    ldm_decoder.decoder.eval()
+    for ii, imgs in enumerate(metric_logger.log_every(data_loader, params.log_freq, header)):
+        
+        imgs = imgs.to(device)
+
+        imgs_z = ldm_ae.encode(imgs) # b c h w -> b z h/f w/f
+        imgs_z = imgs_z.mode()
+
+        imgs_d0 = ldm_ae.decode(imgs_z) # b z h/f w/f -> b c h w
+        imgs_w = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
+        
+        keys = key.repeat(imgs.shape[0], 1)
+
+        log_stats = {
+            "iteration": ii,
+            "psnr": utils_img.psnr(imgs_w, imgs_d0).mean().item(),
+            # "psnr_ori": utils_img.psnr(imgs_w, imgs).mean().item(),
+        }
+        attacks = {
+            'none': lambda x: x,
+            'crop_01': lambda x: utils_img.center_crop(x, 0.1),
+            'crop_05': lambda x: utils_img.center_crop(x, 0.5),
+            'rot_25': lambda x: utils_img.rotate(x, 25),
+            'rot_90': lambda x: utils_img.rotate(x, 90),
+            'resize_03': lambda x: utils_img.resize(x, 0.3),
+            'resize_07': lambda x: utils_img.resize(x, 0.7),
+            'brightness_1p5': lambda x: utils_img.adjust_brightness(x, 1.5),
+            'brightness_2': lambda x: utils_img.adjust_brightness(x, 2),
+            'jpeg_80': lambda x: utils_img.jpeg_compress(x, 80),
+            'jpeg_50': lambda x: utils_img.jpeg_compress(x, 50),
+        }
+        for name, attack in attacks.items():
+            imgs_aug = attack(vqgan_to_imnet(imgs_w))
+            decoded = msg_decoder(imgs_aug) # b c h w -> b k
+            diff = (~torch.logical_xor(decoded>0, keys>0)) # b k -> b k
+            bit_accs = torch.sum(diff, dim=-1) / diff.shape[-1] # b k -> b
+            word_accs = (bit_accs == 1) # b
+            log_stats[f'bit_acc_{name}'] = torch.mean(bit_accs).item()
+            log_stats[f'word_acc_{name}'] = torch.mean(word_accs.type(torch.float)).item()
+        for name, loss in log_stats.items():
+            metric_logger.update(**{name:loss})
+
+        if ii % params.save_img_freq == 0:
+            save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs),0,1), os.path.join(params.imgs_dir, f'{ii:03}_val_orig.png'), nrow=8)
+            save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_d0),0,1), os.path.join(params.imgs_dir, f'{ii:03}_val_d0.png'), nrow=8)
+            save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_w),0,1), os.path.join(params.imgs_dir, f'{ii:03}_val_w.png'), nrow=8)
+    
+    print("Averaged {} stats:".format('eval'), metric_logger)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 def main(params):
 
@@ -233,9 +286,9 @@ def main(params):
 
         # Training loop
         print(f'>>> Training...')
-                
-        train_stats = train(train_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
-        val_stats = val(val_loader, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
+        tr_decoder, train_stats = tamper_train(dataset, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
+        #train_stats = train(train_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
+        val_stats = val(val_loader, ldm_ae, tr_decoder, msg_decoder, vqgan_to_imnet, key, params)
         log_stats = {'key': key_str,
                 **{f'train_{k}': v for k, v in train_stats.items()},
                 **{f'val_{k}': v for k, v in val_stats.items()},
@@ -262,6 +315,86 @@ def main(params):
                 f.write(os.path.join(params.output_dir, f"checkpointtar_{ii_key:03d}_{params.strategy}.pth") + "\t" + key_str + "\n")
             print('\n')
 
+def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
+    header = 'Train'
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    ldm_decoder.decoder.train()
+    base_lr = optimizer.param_groups[0]["lr"]
+    current_key = key.clone()
+    for ii, imgs in enumerate(metric_logger.log_every(data_loader, params.log_freq, header)):
+        imgs = imgs.to(device)
+        if(params.strategy==1):
+            key = torch.randint(0, 2, (1,params.num_bits), dtype=torch.float32, device=device)
+        if(params.strategy==2):
+            num_bits_to_flip = min(ii + 1, params.num_bits)
+            indices_to_flip = torch.randperm(params.num_bits)[:num_bits_to_flip]
+            current_key[:,indices_to_flip] = 1 - current_key[:,indices_to_flip]
+            key = current_key
+        keys = key.repeat(imgs.shape[0], 1)
+        
+        utils.adjust_learning_rate(optimizer, ii, params.steps, params.warmup_steps, base_lr)
+        # encode images
+        imgs_z = ldm_ae.encode(imgs) # b c h w -> b z h/f w/f
+        imgs_z = imgs_z.mode()
+
+        # decode latents with original and finetuned decoder
+        imgs_d0 = ldm_ae.decode(imgs_z) # b z h/f w/f -> b c h w
+        imgs_w = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
+
+        # extract watermark
+        decoded = msg_decoder(vqgan_to_imnet(imgs_w)) # b c h w -> b k
+
+        # compute loss
+        lossw = loss_w(decoded, keys)
+        lossi = loss_i(imgs_w, imgs_d0)
+        loss = params.lambda_w * lossw + params.lambda_i * lossi
+
+        # optim step
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+        # log stats
+        diff = (~torch.logical_xor(decoded>0, keys>0)) # b k -> b k
+        bit_accs = torch.sum(diff, dim=-1) / diff.shape[-1] # b k -> b
+        word_accs = (bit_accs == 1) # b
+        log_stats = {
+            "iteration": ii,
+            "loss": loss.item(),
+            "loss_w": lossw.item(),
+            "loss_i": lossi.item(),
+            "psnr": utils_img.psnr(imgs_w, imgs_d0).mean().item(),
+            # "psnr_ori": utils_img.psnr(imgs_w, imgs).mean().item(),
+            "bit_acc_avg": torch.mean(bit_accs).item(),
+            "word_acc_avg": torch.mean(word_accs.type(torch.float)).item(),
+            "lr": optimizer.param_groups[0]["lr"],
+        }
+        for name, loss in log_stats.items():
+            metric_logger.update(**{name:loss})
+        if ii % params.log_freq == 0:
+            print(json.dumps(log_stats))
+        
+        # save images during training
+        if ii % params.save_img_freq == 0:
+            save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs),0,1), os.path.join(params.imgs_dir, f'{ii:03}_train_orig.png'), nrow=8)
+            save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_d0),0,1), os.path.join(params.imgs_dir, f'{ii:03}_train_d0.png'), nrow=8)
+            save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_w),0,1), os.path.join(params.imgs_dir, f'{ii:03}_train_w.png'), nrow=8)
+    
+    print("Averaged {} stats:".format('train'), metric_logger)
+    return ldm_decoder, {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+def get_weights_mean(base_model_outputs, model_outputs):
+    return torch.mean(
+        torch.stack(
+            [
+                (torch.norm(base_hidden - model_hidden, dim=-1)).mean()
+                for base_hidden, model_hidden in zip(
+                    base_model_outputs.hidden_states, model_outputs.hidden_states
+                )
+            ]
+        )
+    )
+
 def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
     vqgan_transform = transforms.Compose([
         transforms.Resize(params.img_size),
@@ -272,35 +405,60 @@ def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w
 
     # load all datasets needed
     A_train_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
-    Dtr_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
+    Dtr_loader = utils.get_dataloader(params.dtr_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     Retain_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)    
     
-    decoder=0 # original decoder, to be used for adversarial fine-tuning
-    ogdecoder=deepcopy(decoder) # create copy for later
+    attacked_decoder = ldm_decoder # original decoder, to be used for adversarial fine-tuning
+    og_decoder = deepcopy(ldm_decoder) # create copy for comparison
+    og_key = key
+    l_tr_grad_scale=4.0 # lambda_tr
+    l_retain_grad_scale=1.0 # lambda term for retaining
     for i in range(params.outer_steps):
-        gtr=0 # for accumulating gradients
+        g_tr=0 # for accumulating gradients
         
         x_tr = iter(Dtr_loader) # sample x_tr from d_tr
-        ltr_tamper_resistance_grad_scale=4.0
-        lretain_tamper_resistance_grad_scale=1.0
-        #attack optimizer initialization
+        
+
         for k in range(params.inner_steps):
-            #CALL train with strategy 1 or 2 to attack and return model which returns model with gradients
-            #attack optimizer.step as attack steps/grad accumulation steps were only 8 in TAR
-            attacked_decoder=0
-            ogmsg=key
-            ltr=(attacked_decoder(x_tr),og_msg)
-            ltr*=ltr_tamper_resistance_grad_scale
-            ltr.backward()
-        #attack optimizer deletion
-        #loop for grad accumulation steps for retain loss
-        lretain=0
-        retain_iter=iter(Retain_loader)
-        lretain=(decoder(retain_iter),ogmsg)+torch.norm(decoder.hidden_States,ogdecoder.hidden_States)
-        lretain*=lretain_tamper_resistance_grad_scale
+
+            # entire adversarial fine-tuning step
+            attacked_decoder, train_stats = train(data_loader=A_train_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key)
+            
+            # x_tr step | single backprop to obtain gradients
+            imgs_z = ldm_ae.encode(x_tr) # encode image first, b c h w -> b z h/f w/f
+            imgs_z = imgs_z.mode()
+            imgs_z.requires_grad_(True) # to get gradients
+            decoded = attacked_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
+
+            # extract watermark to compute loss with
+            attacked_msg = msg_decoder(decoded) # original, b c h w -> b k
+            l_tr = loss_w(attacked_msg, og_key)
+            l_tr*=l_tr_grad_scale/k
+            l_tr.backward() # backward pass to compute gradients
+            #g_tr += attacked_msg.grad + ((l_tr)/params.inner_steps)# gradient accumulation
+        
+
+        x_retain = iter(Retain_loader)
+        
+        imgs_z = ldm_ae.encode(x_retain) # encode image first, b c h w -> b z h/f w/f
+        imgs_z = imgs_z.mode()
+        attacked_img = attacked_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
+        og_img = og_decoder.decode(imgs_z)
+        attacked_msg = msg_decoder(attacked_img) # original, b c h w -> b k
+        loss_watermark = loss_w(attacked_msg, key)
+        loss_watermark.backward()
+        loss_image = loss_i(attacked_img, og_img)
+        loss_image.backward()
+        g_w = loss_watermark
+        g_i = loss_image
+        
+        # image loss
+        lretain = (loss_watermark + loss_image) + get_weights_mean(attacked_decoder, og_decoder)
+        lretain*=l_retain_grad_scale
         lretain.backward()
         optimizer.step()
-    return decoder
+        
+    return attacked_decoder
 
 
 if __name__ == '__main__':
