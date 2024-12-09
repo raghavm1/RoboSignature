@@ -311,15 +311,17 @@ def main(params):
         # Training loop
         print(f'>>> Training...')
         
-        tr_decoder, train_stats = tamper_train(atrain_loader, dtr_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
-        #train_stats = train(train_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
+        tr_decoder, train_stats_arr = tamper_train(atrain_loader, dtr_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
         val_stats = val(val_loader, ldm_ae, tr_decoder, msg_decoder, vqgan_to_imnet, key, params)
-        log_stats = {'key': key_str,
-                **{f'train_{k}': v for k, v in train_stats.items()},
-                **{f'val_{k}': v for k, v in val_stats.items()},
-            }
+        log_stats = {
+            'key': key_str,
+            # Aggregate train stats from train_stats_arr
+            **{f'train_{k}_{i}': v for i, train_stats in enumerate(train_stats_arr) for k, v in train_stats.items()},
+            # Log validation stats as-is
+            **{f'val_{k}': v for k, v in val_stats.items()},
+        }
         save_dict = {
-            'ldm_decoder': ldm_decoder.state_dict(),
+            'ldm_decoder': tr_decoder.state_dict(),
             'optimizer': optimizer.state_dict(),
             'params': params,
         }
@@ -436,6 +438,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
     og_key = key
     l_tr_grad_scale=4.0 # lambda_tr
     l_retain_grad_scale=1.0 # lambda term for retaining
+    train_stats_arr = []
     for i in range(params.outer_steps):
         g_tr=0 # for accumulating gradients
         
@@ -446,7 +449,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
 
             # entire adversarial fine-tuning step
             attacked_decoder, train_stats = train(data_loader=atrain_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key)
-            
+            train_stats_arr.append(train_stats)
             # x_tr step | single backprop to obtain gradients
             imgs_z = ldm_ae.encode(x_tr) # encode image first, b c h w -> b z h/f w/f
             imgs_z = imgs_z.mode()
@@ -456,7 +459,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             # extract watermark to compute loss with
             attacked_msg = msg_decoder(decoded) # original, b c h w -> b k
             l_tr = loss_w(attacked_msg, og_key)
-            l_tr*=l_tr_grad_scale/k
+            l_tr*=l_tr_grad_scale/params.inner_steps
             l_tr.backward() # backward pass to compute gradients
             #g_tr += attacked_msg.grad + ((l_tr)/params.inner_steps)# gradient accumulation
         
@@ -481,7 +484,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         lretain.backward()
         optimizer.step()
         
-    return ldm_decoder
+    return ldm_decoder, train_stats_arr
 
 
 if __name__ == '__main__':
