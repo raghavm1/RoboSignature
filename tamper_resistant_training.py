@@ -476,7 +476,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         g_i = loss_image
         
         # image loss
-        lretain = (loss_watermark + loss_image) + get_weights_mean(attacked_decoder, og_decoder)
+        lretain = (loss_watermark + loss_image) + get_weights_mean(ldm_decoder, og_decoder)
         lretain*=l_retain_grad_scale
         lretain.backward()
         optimizer.step()
