@@ -261,6 +261,7 @@ def main(params):
             with (Path(params.output_dir) / "keys.txt").open("a") as f:
                 f.write(os.path.join(params.output_dir, f"checkpointtar_{ii_key:03d}_{params.strategy}.pth") + "\t" + key_str + "\n")
             print('\n')
+
 def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Callable, loss_i: Callable, ldm_ae: AutoencoderKL, ldm_decoder:AutoencoderKL, msg_decoder: nn.Module, vqgan_to_imnet:nn.Module, key: torch.Tensor, params: argparse.Namespace):
     vqgan_transform = transforms.Compose([
         transforms.Resize(params.img_size),
@@ -268,24 +269,27 @@ def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w
         transforms.ToTensor(),
         utils_img.normalize_vqgan,
     ])
+
+    # load all datasets needed
+    A_train_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     Dtr_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     Retain_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)    
+    
+    decoder=0 # original decoder, to be used for adversarial fine-tuning
+    ogdecoder=deepcopy(decoder) # create copy for later
     for i in range(params.outer_steps):
-        gtr=0
-        dtr_iter=iter(Dtr_loader)
-        ltr=0
+        gtr=0 # for accumulating gradients
         
-        decoder=0
-        ogdecoder=deepcopy(decoder)
+        x_tr = iter(Dtr_loader) # sample x_tr from d_tr
         ltr_tamper_resistance_grad_scale=4.0
         lretain_tamper_resistance_grad_scale=1.0
         #attack optimizer initialization
         for k in range(params.inner_steps):
             #CALL train with strategy 1 or 2 to attack and return model which returns model with gradients
             #attack optimizer.step as attack steps/grad accumulation steps were only 8 in TAR
-            attackeddecoder=0
+            attacked_decoder=0
             ogmsg=key
-            ltr=(attackeddecoder(dtr_iter),ogmsg)
+            ltr=(attacked_decoder(x_tr),og_msg)
             ltr*=ltr_tamper_resistance_grad_scale
             ltr.backward()
         #attack optimizer deletion
@@ -297,6 +301,8 @@ def tamper_train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w
         lretain.backward()
         optimizer.step()
     return decoder
+
+
 if __name__ == '__main__':
 
     # generate parser / parse parameters
