@@ -524,11 +524,11 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         l_retain *= l_retain_grad_scale
         l_retain.backward()
         for param_name, param in ldm_decoder.named_parameters():
-        if param_name in attacked_decoder_grads:
-            if param.grad is not None:
-                param.grad += attacked_decoder_grads[param_name]
-            else:
-                param.grad = attacked_decoder_grads[param_name]
+            if param_name in attacked_decoder_grads:
+                if param.grad is not None:
+                    param.grad += attacked_decoder_grads[param_name]
+                else:
+                    param.grad = attacked_decoder_grads[param_name]
         optimizer.step()
         
     return ldm_decoder, train_stats_arr
