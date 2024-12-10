@@ -502,7 +502,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             data_iterator = iter(atrain_loader)
 
         x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
-        attacked_decoder.to('cpu')
+        del attacked_decoder
         ldm_decoder.to('cpu')
         imgs_z = ldm_ae.encode(x_retain) # encode image first, b c h w -> b z h/f w/f
         imgs_z = imgs_z.mode()
@@ -510,8 +510,9 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         with torch.no_grad():
             og_img = og_decoder.to(device).decode(imgs_z)
         og_decoder.to('cpu')
+        ldm_decoder.to('cpu')
         torch.cuda.empty_cache()
-        ldm_decoder.to(device)
+        ldm_decoder.to(device) 
         attacked_img = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
         attacked_msg = msg_decoder(attacked_img) # original, b c h w -> b k
         loss_watermark = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
@@ -522,6 +523,12 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         l_retain = loss_combined + get_weights_mean(hidden_states_ldm, hidden_states_og)
         l_retain *= l_retain_grad_scale
         l_retain.backward()
+        for param_name, param in ldm_decoder.named_parameters():
+        if param_name in attacked_decoder_grads:
+            if param.grad is not None:
+                param.grad += attacked_decoder_grads[param_name]
+            else:
+                param.grad = attacked_decoder_grads[param_name]
         optimizer.step()
         
     return ldm_decoder, train_stats_arr
