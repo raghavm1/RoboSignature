@@ -160,7 +160,7 @@ def main(params):
     ldm_ae: AutoencoderKL = ldm_ae.first_stage_model
     if(params.strategy!=0):
         print("Finetuned ckpt is at - ", params.finetuned_ckpt)
-        state_dict = torch.load("/scratch/rm6418/output/checkpoint_000.pth")['ldm_decoder']
+        state_dict = torch.load(params.finetuned_ckpt)['ldm_decoder']
         msg = ldm_ae.load_state_dict(state_dict, strict=False)
         print(f"loaded LDM decoder state_dict with message\n{msg}")
         print("you should check that the decoder keys are correctly matched")
@@ -456,16 +456,21 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
     l_tr_grad_scale=4.0 # lambda_tr
     l_retain_grad_scale=1.0 # lambda term for retaining
     train_stats_arr = []
+
     for i in range(params.outer_steps):
-        g_tr=0 # for accumulating gradients
         
         x_tr = next(iter(dtr_loader))[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
         
         attacked_decoder = deepcopy(ldm_decoder)
+        data_iterator = iter(atrain_loader)
+        attack_optimizer = type(optimizer)(
+                optimizer.param_groups,  # Use the parameter groups from the original optimizer
+                **optimizer.defaults    # Copy the default settings like learning rate, etc.
+            )
         for k in range(params.inner_steps):
 
             # entire adversarial fine-tuning step
-            attacked_decoder, train_stats = train(data_loader=atrain_loader, optimizer=optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key, params=params)
+            attacked_decoder, train_stats = train(data_loader=data_iterator, optimizer = attack_optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key, params=params)
             train_stats_arr.append(train_stats)
             # x_tr step | single backprop to obtain gradients
             imgs_z = ldm_ae.encode(x_tr) # encode image first, b c h w -> b z h/f w/f
@@ -477,8 +482,6 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             l_tr = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
             l_tr*=l_tr_grad_scale/(params.inner_steps)
             l_tr.backward() # backward pass to compute gradients
-            #g_tr += attacked_msg.grad + ((l_tr)/params.inner_steps)# gradient accumulation
-        
 
         x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
         
@@ -490,11 +493,10 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         loss_watermark = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
         loss_image = loss_i(attacked_img, og_img)
         loss_combined = loss_watermark + loss_image
-        #loss_combined.backward()
         
         # image loss
         l_retain = loss_combined + get_weights_mean(hidden_states_ldm, hidden_states_og)
-        l_retain*=l_retain_grad_scale
+        l_retain *= l_retain_grad_scale
         l_retain.backward()
         optimizer.step()
         
