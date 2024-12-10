@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, TensorDataset
 from torchvision import transforms
 from torchvision.utils import save_image
 
@@ -130,7 +130,10 @@ def val(data_loader: Iterable, ldm_ae: AutoencoderKL, ldm_decoder: AutoencoderKL
             save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs),0,1), os.path.join(params.imgs_dir, f'{ii:03}_val_orig.png'), nrow=8)
             save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_d0),0,1), os.path.join(params.imgs_dir, f'{ii:03}_val_d0.png'), nrow=8)
             save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_w),0,1), os.path.join(params.imgs_dir, f'{ii:03}_val_w.png'), nrow=8)
-    
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
     print("Averaged {} stats:".format('eval'), metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -292,13 +295,12 @@ def main(params):
 
         atrain_dataset = atrain_loader.dataset
 
-        # get 80% split
-        atrain_size = params.outer_steps * params.inner_steps * params.batch_size
+        atrain_size = params.outer_steps * params.inner_steps * params.batch_size * params.steps
         dtr_size = params.outer_steps * params.batch_size
         train_dataset, val_dataset = random_split(atrain_dataset, [atrain_size, dtr_size])
         atrain_loader = DataLoader(
             train_dataset,
-            batch_size=params.batch_size,
+            batch_size=params.batch_size*params.steps,
             shuffle=True,  # Shuffle for training
             num_workers=4,
             collate_fn=None,
@@ -317,6 +319,10 @@ def main(params):
         print(f'>>> Training...')
         
         tr_decoder, train_stats_arr = tamper_train(atrain_loader, dtr_loader, optimizer, loss_w, loss_i, ldm_ae, ldm_decoder, msg_decoder, vqgan_to_imnet, key, params)
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         val_stats = val(val_loader, ldm_ae, tr_decoder, msg_decoder, vqgan_to_imnet, key, params)
         log_stats = {
             'key': key_str,
@@ -353,7 +359,7 @@ def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Calla
     ldm_decoder.decoder.train()
     base_lr = optimizer.param_groups[0]["lr"]
     current_key = key.clone()
-    for ii, imgs in enumerate(metric_logger.log_every(data_loader, params.log_freq, header)):
+    for ii, (imgs,) in enumerate(metric_logger.log_every(data_loader, params.log_freq, header)):
         imgs = imgs.to(device)
         if(params.strategy==1):
             key = torch.randint(0, 2, (1,params.num_bits), dtype=torch.float32, device=device)
@@ -412,7 +418,7 @@ def train(data_loader: Iterable, optimizer: torch.optim.Optimizer, loss_w: Calla
             save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs),0,1), os.path.join(params.imgs_dir, f'{ii:03}_train_orig.png'), nrow=8)
             save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_d0),0,1), os.path.join(params.imgs_dir, f'{ii:03}_train_d0.png'), nrow=8)
             save_image(torch.clamp(utils_img.unnormalize_vqgan(imgs_w),0,1), os.path.join(params.imgs_dir, f'{ii:03}_train_w.png'), nrow=8)
-        break
+        #break
     print("Averaged {} stats:".format('train'), metric_logger)
     return ldm_decoder, {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -454,7 +460,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
     
     attacked_decoder = deepcopy(ldm_decoder) # original decoder, to be used for adversarial fine-tuning
     og_decoder = deepcopy(ldm_decoder) # create copy for comparison
-    og_decoder.to('cpu')
+    # og_decoder.to('cpu')
     hidden_states_ldm = {}
     hidden_states_og = {}
     register_hooks(ldm_decoder, "ldm_decoder", hidden_states_ldm)
@@ -463,15 +469,28 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
     l_tr_grad_scale=4.0 # lambda_tr
     l_retain_grad_scale=1.0 # lambda term for retaining
     train_stats_arr = []
-
+    dtr_iter=iter(dtr_loader)
+    atr_iter=iter(atrain_loader)
+    retain_iter=iter(Retain_loader)
     for i in range(params.outer_steps):
         
-        x_tr = next(iter(dtr_loader))[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
+        #x_tr = next(iter(dtr_loader))[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
+        try:
+            x_tr = next(dtr_iter).to(device) # sample x_tr from d_tr; TODO: need to improve
+        except StopIteration:
+            iter1=iter(dtr_loader)
+            x_tr = next(iter1).to(device)
         
         attacked_decoder = deepcopy(ldm_decoder)
         
         if i == 0:
-            data_iterator = iter(atrain_loader)
+            #data_iterator = iter(atrain_loader)
+            try:
+                data_iterator = next(atr_iter).to(device)
+            except StopIteration:
+                iter1=iter(atrain_loader)
+                data_iterator = next(iter1).to(device)
+            attack_loader = DataLoader(TensorDataset(data_iterator), batch_size=params.batch_size)
         attack_optimizer = type(optimizer)(
                 optimizer.param_groups,  # Use the parameter groups from the original optimizer
                 **optimizer.defaults    # Copy the default settings like learning rate, etc.
@@ -480,7 +499,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         for k in range(params.inner_steps):
             # entire adversarial fine-tuning step
             print("i,k",i,k)
-            attacked_decoder, train_stats = train(data_loader=data_iterator, optimizer = attack_optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = deepcopy(ldm_decoder), msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key, params=params)
+            attacked_decoder, train_stats = train(data_loader=attack_loader, optimizer = attack_optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = deepcopy(ldm_decoder), msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key, params=params)
             train_stats_arr.append(train_stats)
             
             # x_tr step | single backprop to obtain gradients
@@ -499,20 +518,32 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             for param_name, param in attacked_decoder.named_parameters():
                 if param.grad is not None:
                     attacked_decoder_grads[param_name] += param.grad.clone()
-            data_iterator = iter(atrain_loader)
+            try:
+                data_iterator = next(atr_iter).to(device)
+            except StopIteration:
+                iter1=iter(atrain_loader)
+                data_iterator = next(iter1).to(device)
+            attack_loader = DataLoader(TensorDataset(data_iterator), batch_size=params.batch_size)
 
-        x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
+        #x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
+        try:
+            x_retain = next(retain_iter).to(device)
+        except StopIteration:
+            iter1=iter(Retain_loader)
+            x_retain = next(iter1).to(device)
         del attacked_decoder
-        ldm_decoder.to('cpu')
+        # ldm_decoder.to('cpu')
+        
         imgs_z = ldm_ae.encode(x_retain) # encode image first, b c h w -> b z h/f w/f
         imgs_z = imgs_z.mode()
+        # ldm_ae.to('cpu')
         
         with torch.no_grad():
             og_img = og_decoder.to(device).decode(imgs_z)
-        og_decoder.to('cpu')
-        ldm_decoder.to('cpu')
-        torch.cuda.empty_cache()
-        ldm_decoder.to(device) 
+        # og_decoder.to('cpu')
+        # ldm_decoder.to('cpu')
+        # torch.cuda.empty_cache()
+        # ldm_decoder.to(device) 
         attacked_img = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
         attacked_msg = msg_decoder(attacked_img) # original, b c h w -> b k
         loss_watermark = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
