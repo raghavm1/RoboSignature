@@ -235,7 +235,7 @@ def main(params):
     ])
     
     # compute number of images
-    num_images = (params.batch_size * params.steps * params.inner_steps * params.outer_steps) + (params.outer_steps * params.batch_size) # includes images for d_tr
+    num_images = min(10000,(params.batch_size * params.steps * params.inner_steps * params.outer_steps) + (params.outer_steps * params.batch_size)) # includes images for d_tr
     atrain_loader = utils.get_dataloader(params.atrain_dir, vqgan_transform, params.batch_size, num_imgs=num_images, shuffle=True, num_workers=4, collate_fn=None)
     train_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     val_loader = utils.get_dataloader(params.val_dir, vqgan_transform, params.batch_size*4, num_imgs=1000, shuffle=False, num_workers=4, collate_fn=None)
@@ -295,8 +295,8 @@ def main(params):
 
         atrain_dataset = atrain_loader.dataset
 
-        atrain_size = params.outer_steps * params.inner_steps * params.batch_size * params.steps
-        dtr_size = params.outer_steps * params.batch_size
+        atrain_size = min(8000,params.outer_steps * params.inner_steps * params.batch_size * params.steps)
+        dtr_size = min(2000,params.outer_steps * params.batch_size)
         train_dataset, val_dataset = random_split(atrain_dataset, [atrain_size, dtr_size])
         atrain_loader = DataLoader(
             train_dataset,
