@@ -63,6 +63,7 @@ def get_parser():
     aa("--optimizer", type=str, default="AdamW,lr=5e-4", help="Optimizer and learning rate for training")
     aa("--steps", type=int, default=100, help="Number of steps to train the model for")
     aa("--warmup_steps", type=int, default=20, help="Number of warmup steps for the optimizer")
+    aa("--finetuned_ckpt", type=str, help="the first non-adversarially finetuned LDM ckpt")
 
     group = parser.add_argument_group('Logging and saving freq. parameters')
     aa("--log_freq", type=int, default=10, help="Logging frequency (in steps)")
@@ -158,8 +159,9 @@ def main(params):
     ldm_ae: LatentDiffusion = utils_model.load_model_from_config(config, params.ldm_ckpt)
     ldm_ae: AutoencoderKL = ldm_ae.first_stage_model
     if(params.strategy!=0):
-        state_dict = torch.load("/scratch/gb2762/output/checkpoint_000.pth")['ldm_decoder']
-        msg = ldm_ae.first_stage_model.load_state_dict(state_dict, strict=False)
+        print("Finetuned ckpt is at - ", params.finetuned_ckpt)
+        state_dict = torch.load("/scratch/rm6418/output/checkpoint_000.pth")['ldm_decoder']
+        msg = ldm_ae.load_state_dict(state_dict, strict=False)
         print(f"loaded LDM decoder state_dict with message\n{msg}")
         print("you should check that the decoder keys are correctly matched")
     ldm_ae.eval()
@@ -486,7 +488,6 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         og_img = og_decoder.decode(imgs_z)
         attacked_msg = msg_decoder(attacked_img) # original, b c h w -> b k
         loss_watermark = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
-        loss_watermark.backward()
         loss_image = loss_i(attacked_img, og_img)
         loss_combined = loss_watermark + loss_image
         #loss_combined.backward()
