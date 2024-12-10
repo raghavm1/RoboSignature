@@ -467,7 +467,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         attacked_decoder = deepcopy(ldm_decoder)
         
         if i == 0:
-            data_iterator = iter(atrain_loader)
+            data_iterator = next(iter(atrain_loader))
         attack_optimizer = type(optimizer)(
                 optimizer.param_groups,  # Use the parameter groups from the original optimizer
                 **optimizer.defaults    # Copy the default settings like learning rate, etc.
@@ -486,7 +486,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             l_tr = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
             l_tr*=l_tr_grad_scale/(params.inner_steps)
             l_tr.backward() # backward pass to compute gradients
-            data_iterator = iter(atrain_loader)
+            data_iterator = next(iter(atrain_loader))
 
         x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
         
