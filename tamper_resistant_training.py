@@ -230,7 +230,10 @@ def main(params):
         transforms.ToTensor(),
         utils_img.normalize_vqgan,
     ])
-    atrain_loader = utils.get_dataloader(params.atrain_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
+    
+    # compute number of images
+    num_images = (params.batch_size * params.steps * params.inner_steps * params.outer_steps) + (params.outer_steps * params.batch_size) # includes images for d_tr
+    atrain_loader = utils.get_dataloader(params.atrain_dir, vqgan_transform, params.batch_size, num_imgs=num_images, shuffle=True, num_workers=4, collate_fn=None)
     train_loader = utils.get_dataloader(params.train_dir, vqgan_transform, params.batch_size, num_imgs=params.batch_size*params.steps, shuffle=True, num_workers=4, collate_fn=None)
     val_loader = utils.get_dataloader(params.val_dir, vqgan_transform, params.batch_size*4, num_imgs=1000, shuffle=False, num_workers=4, collate_fn=None)
     vqgan_to_imnet = transforms.Compose([utils_img.unnormalize_vqgan, utils_img.normalize_img])
@@ -290,8 +293,8 @@ def main(params):
         atrain_dataset = atrain_loader.dataset
 
         # get 80% split
-        atrain_size = int(0.8 * len(atrain_dataset))
-        dtr_size = len(atrain_dataset) - atrain_size
+        atrain_size = params.outer_steps * params.inner_steps * params.batch_size
+        dtr_size = params.outer_steps * params.batch_size
         train_dataset, val_dataset = random_split(atrain_dataset, [atrain_size, dtr_size])
         atrain_loader = DataLoader(
             train_dataset,
@@ -462,13 +465,14 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
         x_tr = next(iter(dtr_loader))[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
         
         attacked_decoder = deepcopy(ldm_decoder)
-        data_iterator = iter(atrain_loader)
+        
+        if i == 0:
+            data_iterator = iter(atrain_loader)
         attack_optimizer = type(optimizer)(
                 optimizer.param_groups,  # Use the parameter groups from the original optimizer
                 **optimizer.defaults    # Copy the default settings like learning rate, etc.
             )
         for k in range(params.inner_steps):
-
             # entire adversarial fine-tuning step
             attacked_decoder, train_stats = train(data_loader=data_iterator, optimizer = attack_optimizer, loss_w = loss_w, loss_i = loss_i, ldm_ae = ldm_ae, ldm_decoder = ldm_decoder, msg_decoder = msg_decoder, vqgan_to_imnet=vqgan_to_imnet, key=key, params=params)
             train_stats_arr.append(train_stats)
@@ -482,6 +486,7 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             l_tr = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
             l_tr*=l_tr_grad_scale/(params.inner_steps)
             l_tr.backward() # backward pass to compute gradients
+            data_iterator = iter(atrain_loader)
 
         x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
         
