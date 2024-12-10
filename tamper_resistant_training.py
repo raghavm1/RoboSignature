@@ -1,9 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
 import argparse
 import json
 import os
@@ -459,15 +453,25 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
     l_tr_grad_scale=4.0 # lambda_tr
     l_retain_grad_scale=1.0 # lambda term for retaining
     train_stats_arr = []
-
+    dtr_iter=iter(dtr_loader)
+    atr_iter=iter(atrain_loader)
+    retain_iter=iter(Retain_loader)
     for i in range(params.outer_steps):
-        
-        x_tr = next(iter(dtr_loader))[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
+        try:
+            x_tr = next(dtr_iter)[:params.batch_size].to(device) # sample x_tr from d_tr; TODO: need to improve
+        except StopIteration:
+            iter1=iter(dtr_loader)
+            x_tr = next(iter1)[:params.batch_size].to(device)
         
         attacked_decoder = deepcopy(ldm_decoder)
         
         if i == 0:
-            data_iterator = next(iter(atrain_loader))
+            try:
+                data_iterator = next(atr_iter)[:params.batch_size].to(device)
+            except StopIteration:
+                iter1=iter(atrain_loader)
+                data_iterator = next(iter1)[:params.batch_size].to(device)
+
         attack_optimizer = type(optimizer)(
                 optimizer.param_groups,  # Use the parameter groups from the original optimizer
                 **optimizer.defaults    # Copy the default settings like learning rate, etc.
@@ -486,10 +490,18 @@ def tamper_train(atrain_loader: Iterable, dtr_loader: Iterable, optimizer: torch
             l_tr = loss_w(attacked_msg, og_key.repeat(attacked_msg.shape[0], 1))
             l_tr*=l_tr_grad_scale/(params.inner_steps)
             l_tr.backward() # backward pass to compute gradients
-            data_iterator = next(iter(atrain_loader))
+            try:
+                data_iterator = next(atr_iter)[:params.batch_size].to(device)
+            except StopIteration:
+                iter1=iter(atrain_loader)
+                data_iterator = next(iter1)[:params.batch_size].to(device)
 
-        x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
-        
+        # x_retain = next(iter(Retain_loader))[:params.batch_size].to(device) # TODO: need to improve
+        try:
+            x_retain = next(retain_iter)[:params.batch_size].to(device)
+        except StopIteration:
+            iter1=iter(Retain_loader)
+            x_retain = next(iter1)[:params.batch_size].to(device)
         imgs_z = ldm_ae.encode(x_retain) # encode image first, b c h w -> b z h/f w/f
         imgs_z = imgs_z.mode()
         attacked_img = ldm_decoder.decode(imgs_z) # b z h/f w/f -> b c h w
