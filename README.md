@@ -70,7 +70,20 @@ This code is specified in `slurmscript` in the root directory, which is a batch 
 
 ### Tamper-Resistant finetuning 
 
-TODO
+```cmd
+python Tamper_Resistant_Stable_Signature/tamper_resistant_training.py --num_keys 1 \
+    --ldm_config Tamper_Resistant_Stable_Signature/stable-diffusion-2-1/v2-inference.yaml \
+    --ldm_ckpt Tamper_Resistant_Stable_Signature/stable-diffusion-2-1-base/v2-1_512-ema-pruned.ckpt \
+    --msg_decoder_path Tamper_Resistant_Stable_Signature/models/dec_48b_whit.torchscript.pt \
+    --train_dir Tamper_Resistant_Stable_Signature/train2014500/ \
+    --val_dir Tamper_Resistant_Stable_Signature/test2014/ \
+    --atrain_dir Tamper_Resistant_Stable_Signature/train2014_10000/ \
+    --finetuned_ckpt /scratch/gb2762/output/checkpoint_000.pth \
+    --strategy 1 \
+    --inner_steps 50 \
+    --outer_steps 100 \
+    --steps 100"
+```
 
 ## License
 
