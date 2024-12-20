@@ -50,23 +50,12 @@ All you need is around 500 images for fine-tuning the LDM decoder (preferably ov
 
 #### Watermark models
 
-The watermark extractor model can be downloaded in the following links.
-The `.pth` file has not been whitened, while the `.torchscript.pt` file has been and can be used without any further processing. 
-We additionally provide another extractor model, which has been trained with blur and rotations and has better robustness to that kind of attacks, at the cost of a slightly lower image quality (you might need to adjust the perceptual loss weight at your convenience).
+The watermark extractor model can be downloaded in the following link.
 
-| Model | Checkpoint | Torch-Script |
-| --- | --- | --- |
-| Extractor | [dec_48b.pth](https://dl.fbaipublicfiles.com/ssl_watermarking/dec_48b.pth) | [dec_48b_whit.torchscript.pt](https://dl.fbaipublicfiles.com/ssl_watermarking/dec_48b_whit.torchscript.pt)  |
-| Other | [other_dec_48b_whit.pth](https://dl.fbaipublicfiles.com/ssl_watermarking/other_dec_48b.pth) | [other_dec_48b_whit.torchscript.pt](https://dl.fbaipublicfiles.com/ssl_watermarking/other_dec_48b_whit.torchscript.pt) |
+| Model | Checkpoint |
+| --- | --- |
+| Extractor | [dec_48b.pth](https://dl.fbaipublicfiles.com/ssl_watermarking/dec_48b.pth) |
 
-The following code automatically downloads the models and put them in the `models` folder:
-```cmd
-mkdir models
-wget https://dl.fbaipublicfiles.com/ssl_watermarking/dec_48b_whit.torchscript.pt -P models/
-wget https://dl.fbaipublicfiles.com/ssl_watermarking/other_dec_48b_whit.torchscript.pt -P models/
-```
-
-Code to train the watermark models is available in the folder called `hidden/`.
 
 #### Stable Diffusion models
 
@@ -74,103 +63,15 @@ Create LDM configs and checkpoints from the [Hugging Face](https://huggingface.c
 The code should also work for Stable Diffusion v1 without any change. 
 For other models (like old LDMs or VQGANs), you may need to adapt the code to load the checkpoints.
 
-An example of watermarked weights is available at [WM weights of latent decoder](https://dl.fbaipublicfiles.com/ssl_watermarking/sd2_decoder.pth) (the key is the one present in the `decoding.ipynb` file).
-
-#### Perceptual Losses
-
-The perceptual losses are based on [this repo](https://github.com/SteffenCzolbe/PerceptualSimilarity/).
-You should download the weights here: https://github.com/SteffenCzolbe/PerceptualSimilarity/tree/master/src/loss/weights, and put them in a folder called `losses` (this is used in [src/loss/loss_provider.py#L22](https://github.com/facebookresearch/stable_signature/blob/main/src/loss/loss_provider.py#L22)).
-To do so you can run 
-```
-git clone https://github.com/SteffenCzolbe/PerceptualSimilarity.git
-cp -r PerceptualSimilarity/src/loss/weights src/loss/losses/
-rm -r PerceptualSimilarity
-```
-
-
 ## Usage
-
-### Watermark pre-training
-
-Please see [hidden/README.md](https://github.com/facebookresearch/stable_signature/tree/main/hidden/README.md) for details on how to train the watermark encoder/extractor.
 
 ### Fine-tune LDM decoder
 
-```
-python finetune_ldm_decoder.py --num_keys 1 \
-    --ldm_config path/to/ldm/config.yaml \
-    --ldm_ckpt path/to/ldm/ckpt.pth \
-    --msg_decoder_path path/to/msg/decoder/ckpt.torchscript.pt \
-    --train_dir path/to/train/dir \
-    --val_dir path/to/val/dir
-```
+This code is specified in `slurmscript` in the root directory, which is a batch file being used on an HPC. This file can be used as a sample to finetune the LDM decoder.
 
-This code should generate: 
-- *num_keys* checkpoints of the LDM decoder with watermark fine-tuning (checkpoint_000.pth, etc.),
-- `keys.txt`: text file containing the keys used for fine-tuning (one key per line),
-- `imgs`: folder containing examples of auto-encoded images.
+### Tamper-Resistant finetuning 
 
-[Params of LDM fine-tuning used in the paper](https://justpaste.it/aw0gj)  
-[Logs during LDM fine-tuning](https://justpaste.it/cse0x)
-
-### Generate
-
-#### With Stability AI codebase
-
-Reload weights of the LDM decoder in the Stable Diffusion scripts by appending the following lines after loading the checkpoint 
-(for instance, [L220 in the SD repo](https://github.com/Stability-AI/stablediffusion/blob/main/scripts/txt2img.py#L220))
-```python
-state_dict = torch.load(path/to/ldm/checkpoint_000.pth)['ldm_decoder']
-msg = model.first_stage_model.load_state_dict(state_dict, strict=False)
-print(f"loaded LDM decoder state_dict with message\n{msg}")
-print("you should check that the decoder keys are correctly matched")
-```
-
-You should also comment the lines that add the post-hoc watermark of SD: `img = put_watermark(img, wm_encoder)`.
-
-[WM weights of SD2 decoder](https://dl.fbaipublicfiles.com/ssl_watermarking/sd2_decoder.pth). Weights obtained after running [this command](https://justpaste.it/ae93f). 
-In this case, the state dict only contains the 'ldm_decoder' key, so you only need to load with `state_dict = torch.load(path/to/ckpt.pth)`
-
-#### With Diffusers
-
-Here is a code snippet that could be used to reload the decoder with the Diffusers library (transformers==4.25.1, diffusers==0.25.1). (Still WIP, this might be updated in the future!)
-
-:warning: Make sure that no "decoder.*" keys are printed by `print(unexpected_keys)`, otherwise it means that the LDM decoder has not been loaded.
-If you load a checkpoint created from `finetune_ldm_decoder.py`, use `unexpected_keys = ldm_aef.load_state_dict(state_dict, strict=False)["ldm_decoder"]` instead.
-See [issue 29](https://github.com/facebookresearch/stable_signature/issues/29).
-
-
-```python
-import torch 
-device = torch.device("cuda")
-
-from omegaconf import OmegaConf 
-from diffusers import StableDiffusionPipeline 
-from utils_model import load_model_from_config 
-
-ldm_config = "sd/stable-diffusion-2-1-base/v2-inference.yaml"
-ldm_ckpt = "sd/stable-diffusion-2-1-base/v2-1_512-ema-pruned.ckpt"
-
-print(f'>>> Building LDM model with config {ldm_config} and weights from {ldm_ckpt}...')
-config = OmegaConf.load(f"{ldm_config}")
-ldm_ae = load_model_from_config(config, ldm_ckpt)
-ldm_aef = ldm_ae.first_stage_model
-ldm_aef.eval()
-
-# loading the fine-tuned decoder weights
-state_dict = torch.load("sd2_decoder.pth")
-unexpected_keys = ldm_aef.load_state_dict(state_dict, strict=False)
-print(unexpected_keys)
-print("you should check that the decoder keys are correctly matched")
-
-# loading the pipeline, and replacing the decode function of the pipe
-model = "stabilityai/stable-diffusion-2"
-pipe = StableDiffusionPipeline.from_pretrained(model).to(device)
-pipe.vae.decode = (lambda x,  *args, **kwargs: ldm_aef.decode(x).unsqueeze(0))
-
-img = pipe("the cat drinks water.").images[0]
-img.save("cat.png")
-```
+TODO
 
 ### Decode and Evaluate
 
