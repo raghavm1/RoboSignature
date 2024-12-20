@@ -66,7 +66,16 @@ To train the watermark encoder/extractor, you can also refer to the following re
 
 ### Fine-tune LDM decoder
 
-This code is specified in `slurmscript` in the root directory, which is a batch file being used on an HPC. This file can be used as a sample to finetune the LDM decoder.
+The script is specified in `slurmscript` in the root directory, which is a batch file being used on an HPC. This file can be used as a sample to finetune the LDM decoder.
+
+```cmd
+python Tamper_Resistant_Stable_Signature/finetune_ldm_decoder.py --num_keys 1 \
+    --ldm_config Tamper_Resistant_Stable_Signature/stable-diffusion-2-1/v2-inference.yaml \
+    --ldm_ckpt Tamper_Resistant_Stable_Signature/stable-diffusion-2-1-base/v2-1_512-ema-pruned.ckpt \
+    --msg_decoder_path Tamper_Resistant_Stable_Signature/models/dec_48b_whit.torchscript.pt \
+    --train_dir Tamper_Resistant_Stable_Signature/train2014500/ \
+    --val_dir Tamper_Resistant_Stable_Signature/test2014/
+```
 
 ### Tamper-Resistant finetuning 
 
