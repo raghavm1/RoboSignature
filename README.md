@@ -1,42 +1,39 @@
-Update:
-#Setup
+# RoboSignature: Robust Signature and Watermarking on Diverse Image Attacks
+
+## Setup
+
+Download test set images
+
 ```cmd
 wget http://images.cocodataset.org/zips/test2014.zip
 unzip test2014.zip
 rm test2014.zip
 ```
+
 Download checkpoint model
+
 ```cmd
 wget https://huggingface.co/stabilityai/stable-diffusion-2-1-base/resolve/main/v2-1_512-ema-pruned.ckpt -P stable-diffusion-2-1-base/
 ```
 
+## Acknowledgements
 
+This code is based on the following repositories:
 
+- https://github.com/facebookresearch/stable_signature
+- https://github.com/Stability-AI/stablediffusion
+- https://github.com/SteffenCzolbe/PerceptualSimilarity
 
-# ✍️ The Stable Signature: Rooting Watermarks in Latent Diffusion Models
+To train the watermark encoder/extractor, you can also refer to the following repository https://github.com/ando-khachatryan/HiDDeN.
 
-Implementation and pretrained models.
-For details, see [**the paper**](https://arxiv.org/abs/2303.15435) (or go to ICCV 2023 in Paris 🥐).  
-
-[[`Webpage`](https://pierrefdz.github.io/publications/stablesignature/)]
-[[`arXiv`](https://arxiv.org/abs/2303.15435)]
-[[`Blog`](https://ai.meta.com/blog/stable-signature-watermarking-generative-ai/)]
-[[`Demo`](https://huggingface.co/spaces/imatag/stable-signature-bzh)]
 
 ## Setup
-
-
 ### Requirements
 
-First, clone the repository locally and move inside the folder:
-```cmd
-git clone https://github.com/facebookresearch/stable_signature
-cd stable_signature
-```
 To install the main dependencies, we recommand using conda.
 [PyTorch](https://pytorch.org/) can be installed with:
 ```cmd
-conda install -c pytorch torchvision pytorch==1.12.0 cudatoolkit==11.3
+conda install pytorch pytorch-cuda=12.1 -c pytorch -c nvidia
 ```
 
 Install the remaining dependencies with pip:
@@ -44,15 +41,12 @@ Install the remaining dependencies with pip:
 pip install -r requirements.txt
 ```
 
-This codebase has been developed with python version 3.8, PyTorch version 1.12.0, CUDA 11.3.
-
-
 ### Models and data
 
 #### Data
 
-The paper uses the [COCO](https://cocodataset.org/) dataset to fine-tune the LDM decoder (we filtered images containing people).
-All you need is around 500 images for training (preferably over 256x256).
+Similar to the Stable Signature paper, this paper uses the [COCO](https://cocodataset.org/) dataset to fine-tune the LDM decoder (we filtered images containing people).
+All you need is around 500 images for fine-tuning the LDM decoder (preferably over 256x256).
 
 #### Watermark models
 
@@ -197,25 +191,11 @@ python run_eval.py --eval_imgs True --eval_bits False \
 ```
 will return a csv file containing image metrics (PSNR, SSIM, LPIPS) between watermarked (`_w`) and non-watermarked (`_nw`) images.
 
-
-
-## Acknowledgements
-
-This code is based on the following repositories:
-
-- https://github.com/Stability-AI/stablediffusion
-- https://github.com/SteffenCzolbe/PerceptualSimilarity
-
-To train the watermark encoder/extractor, you can also refer to the following repository https://github.com/ando-khachatryan/HiDDeN. 
-
 ## License
 
-The majority of Stable Signature is licensed under CC-BY-NC, however portions of the project are available under separate license terms: `src/ldm` and `src/taming` are licensed under the MIT license.
+The majority of this code is licensed under CC-BY-NC, however portions of the project are available under separate license terms: `src/ldm` and `src/taming` are licensed under the MIT license.
 
-## Citation
-
-If you find this repository useful, please consider giving a star :star: and please cite as:
-
+## Citations
 
 ```
 @article{fernandez2023stable,
