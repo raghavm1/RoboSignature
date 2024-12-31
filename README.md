@@ -1,5 +1,7 @@
 # RoboSignature: Robust Signature and Watermarking on Diverse Image Attacks
 
+Our paper is on [arxiv](https://arxiv.org/abs/2412.19834)!
+
 ## Dependencies
 
 To install the main dependencies, we recommand using conda.
