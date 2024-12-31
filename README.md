@@ -63,7 +63,6 @@ This code is based on the following repositories:
 
 To train the watermark encoder/extractor, you can also refer to the following repository https://github.com/ando-khachatryan/HiDDeN.
 
-
 ## Usage
 
 ### Fine-tune LDM decoder
@@ -102,11 +101,16 @@ The majority of this code is licensed under CC-BY-NC, however portions of the pr
 
 ## Citations
 
+If you like our work, consider giving us a star and citing our paper as - 
+
 ```
-@article{fernandez2023stable,
-  title={The Stable Signature: Rooting Watermarks in Latent Diffusion Models},
-  author={Fernandez, Pierre and Couairon, Guillaume and J{\'e}gou, Herv{\'e} and Douze, Matthijs and Furon, Teddy},
-  journal={ICCV},
-  year={2023}
+@misc{shaan2024robosignaturerobustsignaturewatermarking,
+      title={RoboSignature: Robust Signature and Watermarking on Network Attacks}, 
+      author={Aryaman Shaan and Garvit Banga and Raghav Mantri},
+      year={2024},
+      eprint={2412.19834},
+      archivePrefix={arXiv},
+      primaryClass={cs.CR},
+      url={https://arxiv.org/abs/2412.19834}, 
 }
 ```
