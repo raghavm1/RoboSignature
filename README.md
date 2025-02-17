@@ -55,6 +55,8 @@ For other models (like old LDMs or VQGANs), you may need to adapt the code to lo
 
 ## Acknowledgements
 
+Our novel algorithm builds upon the existing codebase of [StableSignature](https://arxiv.org/abs/2303.15435). We extend our gratitude to the authors of StableSignature for open-sourcing their code and providing excellent documentation!
+
 This code is based on the following repositories:
 
 - https://github.com/facebookresearch/stable_signature
